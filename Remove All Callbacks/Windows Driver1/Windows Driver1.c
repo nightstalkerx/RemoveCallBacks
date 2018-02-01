@@ -6,6 +6,7 @@ MODULE_BASE_INFO TencentMgr_Info;
 ULONG_PTR DbgkDebugObjectType_Address;
 
 PSPTERMINATETHREADBYPOINTER PspTerminateThreadByPointer;
+PSSUSPENDTHREAD PsSuspendThread;
 
 //判断当前的这个地址是否在电脑管家的驱动中
 BOOLEAN IsInTencentDriver(ULONG_PTR FuncAddress)
@@ -13,7 +14,8 @@ BOOLEAN IsInTencentDriver(ULONG_PTR FuncAddress)
 	if (FuncAddress >= TencentMgr_Info.QMUdisk_Base && FuncAddress <= TencentMgr_Info.QMUdisk_EndAddress)
 		return TRUE;
 
-	if (FuncAddress >= TencentMgr_Info.QQPCHW_Base && FuncAddress <= TencentMgr_Info.QQPCHW_EndAddress)
+	//TencentMgr_Info.QQPCHW_Base这个常年找不到，时常会为0的
+	if (FuncAddress >= TencentMgr_Info.QQPCHW_Base && FuncAddress <= TencentMgr_Info.QQPCHW_EndAddress && TencentMgr_Info.QQPCHW_Base != 0)
 		return TRUE;
 
 	if (FuncAddress >= TencentMgr_Info.QQSysMon_Base && FuncAddress <= TencentMgr_Info.QQSysMon_EndAddress)
@@ -161,6 +163,36 @@ ULONG_PTR GetPspTerminateThreadByPointer()
 				return ((PsTerminateSystemThread + 0x7) + *(ULONG*)(PsTerminateSystemThread + 0x3) & 0xFFFFFFF0FFFFFFFF);
 		}
 		++PsTerminateSystemThread;
+		++p;
+	}
+
+	return 0;
+}
+
+//获取PsSuspendThread函数的地址（从NtSuspendThread）
+ULONG_PTR GetPsSuspendThread()
+{
+	ULONG_PTR NtSuspendThread = 0;
+	ULONG_PTR EndAddress;
+	UCHAR *p;
+
+	NtSuspendThread = GetSsdtFuncAddressById(Index_NtSuspendThread);
+	if (NtSuspendThread == 0)
+	{
+		KdPrint(("Get NtSuspendThread Fail!\n"));
+		return 0;
+	}
+
+	EndAddress = NtSuspendThread + 0x100;
+	p = (UCHAR *)NtSuspendThread;
+	while (NtSuspendThread < EndAddress)
+	{
+		if (MmIsAddressValid(p) && MmIsAddressValid(p + 1) && MmIsAddressValid(p + 2))
+		{
+			if (*p == 0x24 && *(p + 1) == 0x68 && *(p + 2) == 0xe8)
+				return ((NtSuspendThread + 0x7) + *(ULONG*)(NtSuspendThread + 0x3) & 0xFFFFFFF0FFFFFFFF);
+		}
+		++NtSuspendThread;
 		++p;
 	}
 
@@ -726,6 +758,43 @@ NTSTATUS RemoveObRegisterCallBack(ULONG_PTR ObjectType)
 	return STATUS_SUCCESS;
 }
 
+//暂停所有已知之内的tencent的系统线程（原本是想结束的，但是有一个模块的线程结束就蓝屏...）
+NTSTATUS SuspendAllTencentThread()
+{
+	//搜寻所有系统线程，这里用个笨方法了，PsLookup来寻找
+	ULONG i;
+	PETHREAD CurrentThread;
+	NTSTATUS status;
+	PEPROCESS CurrentProcess;
+	ULONG_PTR FuncAddress;
+	ULONG RetValue;
+
+	for (i = 8; i < 1024 * 1024; i += 4)
+	{
+		status = PsLookupThreadByThreadId((HANDLE)i, &CurrentThread);
+		if (!NT_SUCCESS(status))
+			continue;
+
+		CurrentProcess = IoThreadToProcess(CurrentThread);
+		if (strstr(PsGetProcessImageFileName(CurrentProcess),"System"))
+		{
+			FuncAddress = *(ULONG_PTR *)((UCHAR *)CurrentThread + 0x418);
+			if (IsInTencentDriver(FuncAddress))
+			{
+				status = PsSuspendThread(CurrentThread, &RetValue);
+				if (!NT_SUCCESS(status))
+				{
+					ObDereferenceObject(CurrentThread);
+					return status;
+				}
+			}
+		}
+		ObDereferenceObject(CurrentThread);
+	}
+
+	return STATUS_SUCCESS;
+}
+
 //整合下上面所有函数，就是移除所有的函数
 NTSTATUS RemoveAllCallBacks()
 {
@@ -805,16 +874,31 @@ NTSTATUS StartFunction(PDRIVER_OBJECT DriverObject)
 	KdPrint(("DbgkDebugObjectType Address is %llx\n", DbgkDebugObjectType_Address));*/
 
 	PspTerminateThreadByPointer = (PSPTERMINATETHREADBYPOINTER)GetPspTerminateThreadByPointer();
-	if (PspTerminateThreadByPointer == 0)
+	if (PspTerminateThreadByPointer == NULL)
 	{
 		KdPrint(("Get PspTerminateThreadByPointer Fail!\n"));
 		return STATUS_UNSUCCESSFUL;
 	}
 	KdPrint(("PspTerminateThreadByPointer Address is %llx\n", (ULONG_PTR)PspTerminateThreadByPointer));
 
+	PsSuspendThread = (PSSUSPENDTHREAD)GetPsSuspendThread();
+	if (PsSuspendThread == NULL)
+	{
+		KdPrint(("Get PsSuspendThread Fail!\n"));
+		return STATUS_UNSUCCESSFUL;
+	}
+	KdPrint(("PsSuspendThread Address is %llx\n", (ULONG_PTR)PsSuspendThread));
+
 	status = RemoveAllCallBacks();
 	if (!NT_SUCCESS(status))
 		return status;
+
+	status = SuspendAllTencentThread();
+	if (!NT_SUCCESS(status))
+	{
+		KdPrint(("SuspendAllTencentThread Fail! Status is %x\n",status));
+		return status;
+	}
 
 	return STATUS_SUCCESS;
 }

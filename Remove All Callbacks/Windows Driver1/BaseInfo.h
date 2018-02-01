@@ -1,6 +1,7 @@
 #ifndef BASEINFO_H
 #define BASEINFO_H
 
+#include <ntifs.h>
 #include <ntddk.h>
 
 //一个枚举值，包括了基本上所有能用NtQuerySystemInformation操作的所有的值
@@ -181,5 +182,11 @@ typedef NTSTATUS(__fastcall *PSPTERMINATETHREADBYPOINTER)(
 	IN PETHREAD Thread,
 	IN NTSTATUS ExitStatus,
 	IN BOOLEAN DirectTerminate);
+
+typedef NTSTATUS(__fastcall *PSSUSPENDTHREAD)(
+	IN PETHREAD Thread,
+	OUT ULONG* PreviousSuspendCount);
+
+UCHAR *PsGetProcessImageFileName(__in PEPROCESS Process);
 
 #endif

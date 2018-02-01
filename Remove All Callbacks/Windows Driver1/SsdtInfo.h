@@ -8,6 +8,8 @@
 
 //win7-*64 NtCreateDebugObject在SSDT中的下标
 #define Index_NtCreateDebugObject 144
+//win7-*64 NtSuspendThread在SSDT中的下标
+#define Index_NtSuspendThread 379
 
 extern UCHAR *PsGetProcessImageFileName(PEPROCESS Process);
 
